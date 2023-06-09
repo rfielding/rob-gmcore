@@ -314,7 +314,7 @@ spec:
       containers:
       - args:
         - -repo
-        - git@github.com:<your-org>/greymatter-core.git
+        - git@github.com:rfielding/rob-gmcore.git
         - -sshPrivateKeyPath
         - /app/.ssh/ssh-private-key
         - -branch
