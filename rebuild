@@ -1,0 +1,101 @@
+#!/bin/bash
+
+## Meet the various prerequisites
+prerequisites="true"
+mustBeSet() {
+  v=$1
+  if [ -z "${!v}" ]
+  then
+    echo ${v} must be set
+    prerequisites="false"
+  fi
+}
+mustHaveProgram() {
+  p=$1
+  if ! [ -x "$(command -v $p)" ]
+  then
+    echo ${p} must be installed and in the path
+    prerequisites="false"
+  fi
+}
+mustWaitForEdge() {
+  # actually wait on greymatter.service/edge
+	bash -c 'external_ip=""; while [ -z $external_ip ]; do echo "Waiting for edge..."; external_ip=$(kubectl get svc edge -n greymatter --template="{{range .status.loadBalancer.ingress}}{{.ip}}{{end}}"); [ -z "$external_ip" ] && sleep 10; done; echo "End point ready-" && echo $external_ip; export endpoint=$external_ip'
+#  readyServices=$(kubectl get pods --all-namespaces -o json  | jq -r '.items[] | select(.status.phase = "Ready" or ([ .status.conditions[] | select(.type == "Ready") ] | length ) == 1 ) | .metadata.namespace + "/" + .metadata.name')
+
+  echo $readyServices
+  
+  ipPort=$(kubectl get service edge -n greymatter --template="{{(index .status.loadBalancer.ingress 0).ip}}:{{(index .spec.ports 0).port}}")
+  runsAt=http://${ipPort}
+  echo edge at $runsAt is up
+}
+
+TENANTNS=rob-gmtenant
+
+## Meet the prerequisites before going in and changing anything
+mustBeSet "GREYMATTER_REGISTRY"
+mustBeSet "GREYMATTER_REGISTRY_USERNAME"
+mustBeSet "GREYMATTER_REGISTRY_PASSWORD"
+mustHaveProgram k3d
+mustHaveProgram kubectl
+mustHaveProgram ssh-keyscan
+
+## Make the new cluster in the target namespace. Avoid 6999 and 443 port conflicts
+if [ "$prerequisites" == "true" ]
+then
+  echo ----- CLUSTER CREATE -----
+  export MY_CLUSTER=gmdata
+  k3d cluster delete $MY_CLUSTER
+  k3d cluster create $MY_CLUSTER --api-port 6999 --port 443:443@loadbalancer --port 10908:10908@loadbalancer 
+  echo ----- CLUSTER kubeconfig START -----
+  sleep 5 # is there something we can wait on?
+  export KUBECONFIG="$(k3d kubeconfig write $MY_CLUSTER)"
+  echo ----- CLUSTER kubeconfig STOP -----
+  kubectl config use-context k3d-$MY_CLUSTER
+
+  # operator namespace setup
+  ssh-keyscan github.com > known_hosts
+  PRIVATE_KEY=${PRIVATE_KEY:-$(echo ~/).ssh/id_rsa}
+
+  # operator namespace setup
+  kubectl create namespace gm-operator
+  kubectl create secret generic greymatter-core-repo \
+        --from-file=ssh-private-key=$PRIVATE_KEY \
+        --from-file=known_hosts=known_hosts \
+        -n gm-operator
+
+  # tenant namespaces are mentioned in watch_namespace, 
+  # so this config is pushed into core
+  kubectl create namespace $TENANTNS
+
+  echo ----- PROJECT JFROG SECRET -----
+  kubectl create secret docker-registry greymatter-image-pull \
+    --docker-server=$GREYMATTER_REGISTRY \
+    --docker-username=$GREYMATTER_REGISTRY_USERNAME \
+    --docker-password=$GREYMATTER_REGISTRY_PASSWORD \
+    --docker-email=$GREYMATTER_REGISTRY_USERNAME \
+    -n gm-operator
+  sleep 30
+
+  # trying to make error with certs go away
+  #kubectl create secret generic -n gm-operator greymatter-edge-ingress \
+  #  --from-file=ca.crt=./certs/intermediate.crt \
+  #  --from-file=server.crt=./certs/localhost.crt \
+  #  --from-file=server.key=./certs/localhost.key
+
+  echo ----- PROJECT Operator apply -----
+  kubectl apply -f ./generated-manifests/operator.yaml
+
+  # setup the sync secret on the namespace
+  kubectl create secret generic greymatter-admin-sync \
+        --from-file=ssh-private-key=$PRIVATE_KEY \
+        --from-file=known_hosts=known_hosts \
+        -n $TENANTNS
+  # setup the sync secret on the namespace
+  kubectl create secret generic greymatter-admin-sync \
+        --from-file=ssh-private-key=$PRIVATE_KEY \
+        --from-file=known_hosts=known_hosts \
+        -n default
+
+  mustWaitForEdge
+fi
