@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# set -x
+test_workspace=test-generated-manifests
+
+# clean starting point
+rm -f ${test_workspace}
+mkdir ${test_workspace}
+
+# DESIRED
+# Host
+desired_host="greymatter.jfrog.io"
+# Path
+desired_path=${DEST_OCI_CI:-"oci"}
+
+cue eval inputs.cue ./global_intermediates.cue --out json > ${test_workspace}/myjson.json
+desired_image_component_and_version=$(cat ${test_workspace}/myjson.json | jq -r '.defaults.images.operator' | awk -F/ '{print $3}' )
+
+desired_image=${desired_host}/${desired_path}/${desired_image_component_and_version}
+
+touch ${test_workspace}/test-results
+
+files=$(find ./generated-manifests -type f -name "operator*")
+for i in ${files}; do
+    echo ${i}
+    image=$(cat ${i} | grep image | grep ${desired_host} | sed 's|image: ||g' | tr -d '[:space:]')
+    if [[ ${image} == *"${desired_image}"* ]]; then
+        echo "${i} operator image should be ${desired_image} found ${image}"
+    else
+        echo "${i} operator image should be ${desired_image} BUT found ${image}" >> ${test_workspace}/test-results
+    fi
+done
+
+# notify and cleanup
+if [[ $(cat ${test_workspace}/test-results | wc -l) -gt 0 ]]; then
+    cat ${test_workspace}/test-results
+    rm -rf ${test_workspace}
+    exit 5
+else
+    echo "everything looks good"
+    rm -rf ${test_workspace}
+fi

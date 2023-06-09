@@ -1,0 +1,68 @@
+#!/bin/bash
+# set -x
+
+# This script is to evaluate the inputs.cue that is generated in the tag pipeline
+# This validates that all images are set to oci
+
+test_workspace=test-cue-eval
+
+# clean starting point
+rm -f ${test_workspace}
+mkdir ${test_workspace}
+
+# DESIRED
+# Host
+desired_host="greymatter.jfrog.io"
+# Path
+desired_path=${DEST_OCI_CI:-"oci"}
+
+# evaluate the cue
+cue eval $(find . -maxdepth 1 -name "*.cue" | xargs) --out json > ${test_workspace}/myjson.json
+
+touch ${test_workspace}/test-results
+
+# evaluate mesh block images
+keys=$(cat ${test_workspace}/myjson.json | jq -r '.mesh.spec.images | keys[]')
+for i in ${keys}; do
+    # echo ${i}
+    image=$(cat ${test_workspace}/myjson.json | jq -r --arg IMAGE ${i} '.mesh.spec.images[$IMAGE] ')
+    host=$(echo ${image} | awk -F/ '{print $1}')
+    path=$(echo ${image} | awk -F/ '{print $2}')
+    if [[ ${host} == ${desired_host} ]];then
+        if [[ ${path} != ${desired_path} ]];then
+            echo "${i} image should be in ${desired_path} but found ${path} " >> ${test_workspace}/test-results
+        else
+            echo "${i} image should be in ${desired_path} found ${path}"
+        fi
+    else
+        echo "${i} is not a greymatter provided image"
+    fi
+done
+
+# evaluate defaults block images
+keys=$(cat ${test_workspace}/myjson.json | jq -r '.defaults.images | keys[]')
+for i in ${keys}; do
+    # echo ${i}
+    image=$(cat ${test_workspace}/myjson.json | jq -r --arg IMAGE ${i} '.defaults.images[$IMAGE] ')
+    host=$(echo ${image} | awk -F/ '{print $1}')
+    path=$(echo ${image} | awk -F/ '{print $2}')
+    if [[ ${host} == ${desired_host} ]];then
+        if [[ ${path} != ${desired_path} ]];then
+            echo "${i} image should be in ${desired_path} but found ${path} " >> ${test_workspace}/test-results
+        else
+            echo "${i} image should be in ${desired_path} found ${path}"
+        fi
+    else
+        echo "${i} is not a greymatter provided image"
+    fi
+done
+
+# notify and cleanup
+if [[ $(cat ${test_workspace}/test-results | wc -l) -gt 0 ]]; then
+    cat ${test_workspace}/test-results
+    rm -rf ${test_workspace}
+    exit 5
+else
+    echo "everything looks good"
+    rm -rf ${test_workspace}
+fi

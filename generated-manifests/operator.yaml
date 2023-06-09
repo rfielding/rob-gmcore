@@ -1,0 +1,387 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    name: greymatter
+  name: greymatter
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    name: greymatter
+  name: greymatter
+---
+apiVersion: v1
+imagePullSecrets:
+- name: greymatter-image-pull
+kind: ServiceAccount
+metadata:
+  name: greymatter-operator
+  namespace: gm-operator
+---
+apiVersion: v1
+automountServiceAccountToken: true
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/instance: greymatter-audit-agent
+    app.kubernetes.io/name: greymatter-audit-agent
+    app.kubernetes.io/part-of: greymatter-audit-agent
+    app.kubernetes.io/version: 0.22.0
+  name: greymatter-audit-agent
+  namespace: greymatter
+---
+apiVersion: v1
+data:
+  tls.crt: !!binary ""
+  tls.key: !!binary ""
+kind: Secret
+metadata:
+  name: gm-webhook-cert
+  namespace: gm-operator
+---
+apiVersion: v1
+data:
+  overrides.cue: "package greymatter\nconfig: {\n  spire: false\n  openshift: false\n\
+    \  enable_historical_metrics: true\n  auto_copy_image_pull_secret: true\n}"
+kind: ConfigMap
+metadata:
+  name: overrides-cue
+  namespace: gm-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gm-operator-gm-operator-role
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  verbs:
+  - watch
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - apps
+  resources:
+  - deployments/finalizers
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - get
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - list
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - ingresses
+  verbs:
+  - list
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  verbs:
+  - list
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  - nodes/proxy
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gm-operator-greymatter-audit-agent
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gm-operator-gm-operator-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gm-operator-gm-operator-role
+subjects:
+- kind: ServiceAccount
+  name: greymatter-operator
+  namespace: gm-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gm-operator-greymatter-audit-agent-clusterrolebinding
+  namespace: greymatter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gm-operator-greymatter-audit-agent
+subjects:
+- kind: ServiceAccount
+  name: greymatter-audit-agent
+  namespace: greymatter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gm-leader-election-role
+  namespace: gm-operator
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ''
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-name-gm-control-role
+  namespace: greymatter
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - greymatter-oidc-provider
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gm-leader-election-rolebinding
+  namespace: gm-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gm-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: greymatter-operator
+  namespace: gm-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-name-gm-control-role-binding
+  namespace: greymatter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-name-gm-control-role
+subjects:
+- kind: ServiceAccount
+  name: controlensemble
+  namespace: greymatter
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    name: greymatter-operator
+  name: greymatter-operator
+  namespace: gm-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: greymatter-operator
+  serviceName: greymatter-operator
+  template:
+    metadata:
+      labels:
+        name: greymatter-operator
+    spec:
+      containers:
+      - args:
+        - -repo
+        - git@github.com:<your-org>/greymatter-core.git
+        - -sshPrivateKeyPath
+        - /app/.ssh/ssh-private-key
+        - -branch
+        - main
+        command:
+        - /app/operator
+        env:
+        - name: SSH_KNOWN_HOSTS
+          value: /app/.ssh/known_hosts
+        image: greymatter.jfrog.io/oci/greymatter-operator:0.18.0-beta1
+        imagePullPolicy: Always
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 120
+          periodSeconds: 20
+        name: operator
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          limits: {}
+          requests: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: webhook-cert
+          readOnly: true
+        - mountPath: /app/core/overrides.cue
+          name: overrides-cue
+          subPath: overrides.cue
+        - mountPath: /app/.ssh
+          name: greymatter-core-repo
+          readOnly: true
+      imagePullSecrets: []
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: greymatter-operator
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: webhook-cert
+        secret:
+          defaultMode: 420
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key
+          secretName: gm-webhook-cert
+      - configMap:
+          name: overrides-cue
+        name: overrides-cue
+      - name: greymatter-core-repo
+        secret:
+          defaultMode: 288
+          secretName: greymatter-core-repo

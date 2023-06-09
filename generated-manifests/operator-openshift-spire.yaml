@@ -1,0 +1,1122 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    name: greymatter
+  name: greymatter
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    name: spire
+  name: spire
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    name: greymatter
+  name: greymatter
+---
+apiVersion: v1
+imagePullSecrets:
+- name: greymatter-image-pull
+kind: ServiceAccount
+metadata:
+  name: greymatter-operator
+  namespace: gm-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: server
+  namespace: spire
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent
+  namespace: spire
+---
+apiVersion: v1
+automountServiceAccountToken: true
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/instance: greymatter-audit-agent
+    app.kubernetes.io/name: greymatter-audit-agent
+    app.kubernetes.io/part-of: greymatter-audit-agent
+    app.kubernetes.io/version: 0.22.0
+  name: greymatter-audit-agent
+  namespace: greymatter
+---
+apiVersion: v1
+data:
+  tls.crt: !!binary ""
+  tls.key: !!binary ""
+kind: Secret
+metadata:
+  name: gm-webhook-cert
+  namespace: gm-operator
+---
+apiVersion: v1
+data:
+  overrides.cue: "package greymatter\nconfig: {\n  spire: true\n  openshift: true\n\
+    \  enable_historical_metrics: true\n  auto_copy_image_pull_secret: true\n}"
+kind: ConfigMap
+metadata:
+  name: overrides-cue
+  namespace: gm-operator
+---
+apiVersion: v1
+data:
+  registrar.conf: 'trust_domain = "greymatter.io"
+
+    server_socket_path = "/run/spire/socket/registration.sock"
+
+    cluster = "meshes"
+
+    mode = "reconcile"
+
+    pod_label = "greymatter.io/workload"
+
+    metrics_addr = "0"
+
+    controller_name = "k8s-workload-registrar"
+
+    log_level = "debug"
+
+    log_path = "/dev/stdout"'
+  server.conf: "server {\n  bind_address = \"0.0.0.0\"\n  bind_port = \"8443\"\n \
+    \ ca_subject = {\n    country = [\"US\"],\n    organization = [\"Grey Matter\"\
+    ],\n    common_name = \"Mesh\",\n  }\n  data_dir = \"/run/spire/data\"\n  default_svid_ttl\
+    \ = \"1h\"\n  log_file = \"/dev/stdout\"\n  log_level = \"DEBUG\"\n  trust_domain\
+    \ = \"greymatter.io\"\n  socket_path = \"/run/spire/socket/registration.sock\"\
+    \n}\nplugins {\n  DataStore \"sql\" {\n    plugin_data {\n      database_type\
+    \ = \"sqlite3\"\n      connection_string = \"/run/spire/data/datastore.sqlite3\"\
+    \n    }\n  }\n  NodeAttestor \"k8s_psat\" {\n    plugin_data {\n      clusters\
+    \ = {\n        \"meshes\" = {\n          service_account_allow_list = [\"spire:agent\"\
+    ]\n          audience = [\"server\"]\n        }\n      }\n    }\n  }\n  KeyManager\
+    \ \"disk\" {\n    plugin_data {\n      keys_path = \"/run/spire/data/keys.json\"\
+    \n    }\n  }\n  Notifier \"k8sbundle\" {\n    plugin_data {\n      namespace =\
+    \ \"spire\"\n      config_map = \"server-bundle\"\n    }\n  }\n  UpstreamAuthority\
+    \ \"disk\" {\n    plugin_data {\n      cert_file_path = \"/run/spire/ca/intermediate.crt\"\
+    \n      key_file_path = \"/run/spire/ca/intermediate.key\"\n      bundle_file_path\
+    \ = \"/run/spire/ca/root.crt\"\n    }\n  }\n}"
+kind: ConfigMap
+metadata:
+  name: server-config
+  namespace: spire
+---
+apiVersion: v1
+data:
+  bundle.crt: ''
+kind: ConfigMap
+metadata:
+  name: server-bundle
+  namespace: spire
+---
+apiVersion: v1
+data:
+  agent.conf: "agent {\n  data_dir = \"/run/spire\"\n  log_level = \"INFO\"\n  server_address\
+    \ = \"server\"\n  server_port = \"8443\"\n  socket_path = \"/run/spire/socket/agent.sock\"\
+    \n  trust_bundle_path = \"/run/spire/bundle/bundle.crt\"\n  trust_domain = \"\
+    greymatter.io\"\n}\nplugins {\n  NodeAttestor \"k8s_psat\" {\n    plugin_data\
+    \ {\n      cluster = \"meshes\"\n      token_path = \"/run/spire/token/agent\"\
+    \n    }\n  }\n  KeyManager \"memory\" {\n    plugin_data {\n    }\n  }\n  WorkloadAttestor\
+    \ \"k8s\" {\n    plugin_data {\n      skip_kubelet_verification = true\n    }\n\
+    \  }\n}"
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: spire
+---
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: false
+allowHostPID: true
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: null
+allowedUnsafeSysctls: null
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: RunAsAny
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    kubernetes.io/description: Customized policy for Vector to enable hostPath volumes.
+    release.openshift.io/create-only: 'true'
+  name: vector-scc
+priority: null
+readOnlyRootFilesystem: true
+requiredDropCapabilities:
+- KILL
+- MKNOD
+- SETUID
+- SETGID
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+users: []
+volumes:
+- hostPath
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+---
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowPrivilegeEscalation: true
+allowPrivilegedContainer: false
+allowedCapabilities: null
+allowedUnsafeSysctls: null
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: MustRunAs
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    kubernetes.io/description: Customized policy for Spire to enable host level access.
+    release.openshift.io/create-only: 'true'
+  name: spire
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities:
+- KILL
+- MKNOD
+- SETUID
+- SETGID
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+users: []
+volumes:
+- hostPath
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+---
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities:
+- NET_BIND_SERVICE
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: MustRunAs
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    kubernetes.io/description: allows hostpath mount for spire socket
+  name: greymatter-proxy-spire-scc
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities:
+- ALL
+runAsUser:
+  type: MustRunAsRange
+seLinuxContext:
+  type: MustRunAs
+seccompProfiles:
+- runtime/default
+supplementalGroups:
+  type: RunAsAny
+users: []
+volumes:
+- hostPath
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+---
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: null
+allowedUnsafeSysctls: null
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: RunAsAny
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    kubernetes.io/description: Customized policy for Redis to enable fsGroup volumes.
+    release.openshift.io/create-only: 'true'
+  name: redis-scc
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities:
+- KILL
+- MKNOD
+- SETUID
+- SETGID
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+seccompProfiles:
+- runtime/default
+supplementalGroups:
+  type: RunAsAny
+users: []
+volumes:
+- hostPath
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+---
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: null
+allowedUnsafeSysctls: null
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: RunAsAny
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    kubernetes.io/description: Customized policy for Redis to enable fsGroup volumes.
+    release.openshift.io/create-only: 'true'
+  name: prometheus-scc
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities:
+- KILL
+- MKNOD
+- SETUID
+- SETGID
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+users: []
+volumes:
+- hostPath
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gm-operator-gm-operator-role
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  verbs:
+  - watch
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - apps
+  resources:
+  - deployments/finalizers
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - get
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - list
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - ingresses
+  verbs:
+  - list
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  verbs:
+  - list
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  - nodes/proxy
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    rbac.authorization.kubernetes.io/autoupdate: 'true'
+  name: gm-operator-vector-scc
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - vector-scc
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    rbac.authorization.kubernetes.io/autoupdate: 'true'
+  name: gm-operator-system:openshift:scc:spire
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - spire
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: greymatter-proxy-spire-scc
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - greymatter-proxy-spire-scc
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    rbac.authorization.kubernetes.io/autoupdate: 'true'
+  name: gm-operator-redis-scc
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - redis-scc
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: 'true'
+    rbac.authorization.kubernetes.io/autoupdate: 'true'
+  name: gm-operator-prometheus-scc
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - prometheus-scc
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  - nodes
+  - endpoints
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - get
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  - nodes
+  - nodes/proxy
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gm-operator-greymatter-audit-agent
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gm-operator-gm-operator-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gm-operator-gm-operator-role
+subjects:
+- kind: ServiceAccount
+  name: greymatter-operator
+  namespace: gm-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:openshift:scc:spire:agent
+  namespace: spire
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gm-operator-system:openshift:scc:spire
+subjects:
+- kind: ServiceAccount
+  name: agent
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gm-operator-prometheus-scc
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-scc
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: greymatter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server
+subjects:
+- kind: ServiceAccount
+  name: server
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-agent
+subjects:
+- kind: ServiceAccount
+  name: agent
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gm-operator-greymatter-audit-agent-clusterrolebinding
+  namespace: greymatter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gm-operator-greymatter-audit-agent
+subjects:
+- kind: ServiceAccount
+  name: greymatter-audit-agent
+  namespace: greymatter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gm-leader-election-role
+  namespace: gm-operator
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ''
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-name-gm-control-role
+  namespace: greymatter
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - greymatter-oidc-provider
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: server
+  namespace: spire
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - list
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ''
+  resources:
+  - events
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gm-leader-election-rolebinding
+  namespace: gm-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gm-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: greymatter-operator
+  namespace: gm-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-name-gm-control-role-binding
+  namespace: greymatter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-name-gm-control-role
+subjects:
+- kind: ServiceAccount
+  name: controlensemble
+  namespace: greymatter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gm-operator-redis-scc
+  namespace: greymatter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gm-operator-redis-scc
+subjects:
+- kind: ServiceAccount
+  name: greymatter-datastore
+  namespace: greymatter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: server
+  namespace: spire
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: server
+subjects:
+- kind: ServiceAccount
+  name: server
+  namespace: spire
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: spire
+spec:
+  ports:
+  - name: server
+    port: 8443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app: server
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: agent
+  name: agent
+  namespace: spire
+spec:
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+      namespace: spire
+    spec:
+      containers:
+      - args:
+        - -config
+        - /run/spire/config/agent.conf
+        image: gcr.io/spiffe-io/spire-agent:1.5.4
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - /opt/spire/bin/spire-agent
+            - healthcheck
+            - -socketPath
+            - /run/spire/socket/agent.sock
+          failureThreshold: 2
+          initialDelaySeconds: 15
+          periodSeconds: 60
+          timeoutSeconds: 3
+        name: agent
+        resources:
+          limits: {}
+          requests: {}
+        volumeMounts:
+        - mountPath: /run/spire/config
+          name: agent-config
+          readOnly: true
+        - mountPath: /run/spire/socket
+          name: agent-socket
+        - mountPath: /run/spire/bundle
+          name: server-bundle
+          readOnly: true
+        - mountPath: /run/spire/token
+          name: agent-token
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      hostPID: true
+      initContainers:
+      - args:
+        - -t
+        - '30'
+        - server:8443
+        image: gcr.io/spiffe-io/wait-for-it
+        imagePullPolicy: IfNotPresent
+        name: init-server
+        resources: {}
+      serviceAccountName: agent
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: agent-config
+        name: agent-config
+      - hostPath:
+          path: /run/spire/socket
+          type: DirectoryOrCreate
+        name: agent-socket
+      - configMap:
+          defaultMode: 420
+          name: server-bundle
+        name: server-bundle
+      - name: agent-token
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: server
+              expirationSeconds: 7200
+              path: agent
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    name: greymatter-operator
+  name: greymatter-operator
+  namespace: gm-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: greymatter-operator
+  serviceName: greymatter-operator
+  template:
+    metadata:
+      labels:
+        name: greymatter-operator
+    spec:
+      containers:
+      - args:
+        - -repo
+        - git@github.com:<your-org>/greymatter-core.git
+        - -sshPrivateKeyPath
+        - /app/.ssh/ssh-private-key
+        - -branch
+        - main
+        command:
+        - /app/operator
+        env:
+        - name: SSH_KNOWN_HOSTS
+          value: /app/.ssh/known_hosts
+        image: greymatter.jfrog.io/oci/greymatter-operator:0.18.0-beta1
+        imagePullPolicy: Always
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 120
+          periodSeconds: 20
+        name: operator
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          limits: {}
+          requests: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: webhook-cert
+          readOnly: true
+        - mountPath: /app/core/overrides.cue
+          name: overrides-cue
+          subPath: overrides.cue
+        - mountPath: /app/.ssh
+          name: greymatter-core-repo
+          readOnly: true
+      imagePullSecrets: []
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: greymatter-operator
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: webhook-cert
+        secret:
+          defaultMode: 420
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key
+          secretName: gm-webhook-cert
+      - configMap:
+          name: overrides-cue
+        name: overrides-cue
+      - name: greymatter-core-repo
+        secret:
+          defaultMode: 288
+          secretName: greymatter-core-repo
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: server
+  name: server
+  namespace: spire
+spec:
+  selector:
+    matchLabels:
+      app: server
+  serviceName: server
+  template:
+    metadata:
+      labels:
+        app: server
+      name: server
+      namespace: spire
+    spec:
+      containers:
+      - args:
+        - -config
+        - /run/spire/config/server.conf
+        image: gcr.io/spiffe-io/spire-server:1.5.4
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - /opt/spire/bin/spire-server
+            - healthcheck
+            - -socketPath=/run/spire/socket/registration.sock
+          failureThreshold: 2
+          initialDelaySeconds: 15
+          periodSeconds: 60
+          timeoutSeconds: 3
+        name: server
+        ports:
+        - containerPort: 8443
+          name: server
+          protocol: TCP
+        resources:
+          limits: {}
+          requests: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /run/spire/socket
+          name: server-socket
+        - mountPath: /run/spire/config
+          name: server-config
+          readOnly: true
+        - mountPath: /run/spire/ca
+          name: server-ca
+          readOnly: true
+        - mountPath: /run/spire/data
+          name: server-data
+      - args:
+        - -config
+        - /run/spire/config/registrar.conf
+        image: gcr.io/spiffe-io/k8s-workload-registrar:1.5.4
+        imagePullPolicy: IfNotPresent
+        name: registrar
+        ports:
+        - containerPort: 8444
+          name: registrar
+          protocol: TCP
+        resources:
+          limits: {}
+          requests: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /run/spire/config
+          name: server-config
+          readOnly: true
+        - mountPath: /run/spire/socket
+          name: server-socket
+      serviceAccountName: server
+      shareProcessNamespace: true
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: server-socket
+      - configMap:
+          defaultMode: 420
+          name: server-config
+        name: server-config
+      - name: server-ca
+        secret:
+          defaultMode: 420
+          secretName: server-ca
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: server-data
+      namespace: spire
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+      volumeMode: Filesystem

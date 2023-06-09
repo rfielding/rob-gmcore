@@ -1,0 +1,49 @@
+#!/bin/bash
+set -x
+
+
+# Generate the manifest w/ cue
+generate_manifest(){
+    spire_tag=$1
+    openshift_tag=$2
+    output_file=$3
+    
+    if [[ -n ${spire_tag} && -n ${openshift_tag} && -n ${output_file} ]]; then
+    # Do the cue eval w/ spire, openshift, and operator image tags
+    cue eval -c ./k8s/outputs -e operator_manifests_yaml --out=text \
+        -t openshift=${openshift_tag} \
+        -t spire=${spire_tag} \
+        -t git_remote="git@github.com:<your-org>/greymatter-core.git" > ${re_order_dir}/manifest.yaml
+
+    # re order the manifests so they install cleanly
+    ./scripts/reorder-manifest.py
+    if [[ $(cat ${re_order_dir}/manifest-reorder.yaml | tail -1) == "---" ]]; then 
+        echo "Not All k8s resources were added to manifest during reorder"
+        exit 2
+    fi
+
+    mv ${re_order_dir}/manifest-reorder.yaml ${output_file}
+
+    else
+        echo "ERROR: Unset variables.  use cue_eval <spire_tag_bool> <openshift_tag_bool> <path_to_output_file>"
+        exit 5
+    fi
+}
+
+workspace="generated-manifests"
+# this is hard coded in reorder-manifest.py
+re_order_dir="transform-manifest"
+
+# clean starting point
+rm -f ${workspace} ${re_order_dir}
+mkdir ${workspace} ${re_order_dir}
+
+# generate the base operator manifests
+generate_manifest false false ${workspace}/operator.yaml
+generate_manifest true false ${workspace}/operator-spire.yaml
+generate_manifest false true ${workspace}/operator-openshift.yaml
+generate_manifest true true ${workspace}/operator-openshift-spire.yaml
+
+
+# cleanup
+rm -rf ${re_order_dir}

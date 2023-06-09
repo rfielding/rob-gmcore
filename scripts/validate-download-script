@@ -1,0 +1,26 @@
+#!/bin/bash
+set -x
+test_workspace=test-download-script
+
+# clean starting point
+rm -f ${test_workspace}
+mkdir ${test_workspace}
+
+if [[ -f greymatter-download.sh ]]; then
+    cp greymatter-download.sh ${test_workspace}
+    cd ${test_workspace}
+    chmod +x greymatter-download.sh
+    ./greymatter-download.sh $BUILDKITE_ARTIFACTORY_PASSWORD
+    ls -al
+    for i in $(ls . | grep ".tar.gz"); do
+        component=$(echo ${i} | awk -F_ '{print$1}')
+        tar -xf ${i} -C $component
+    done
+else
+    echo "no greymatter download script found"
+    exit 5
+fi
+
+# cleanup
+rm -rf ${test_workspace}
+set +x

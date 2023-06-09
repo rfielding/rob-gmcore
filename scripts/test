@@ -1,0 +1,354 @@
+#!/bin/bash
+
+set -uo pipefail
+set -e
+
+cmd_eval_all () {
+  cmd_eval_gm_basic
+  cmd_eval_k8s
+  cmd_eval_spire
+  cmd_eval_k8s_spire_enabled_and_edge_tls_enabled
+  cmd_eval_k8s_spire_enabled_and_edge_tls_disabled
+  cmd_eval_k8s_spire_disabled_and_edge_tls_disabled
+  cmd_eval_k8s_spire_disabled_and_edge_tls_enabled
+  cmd_eval_gm
+}
+
+cmd_eval_gm_basic () {
+  echo "Running cue eval on greymatter configs..."
+  result=$(cue eval -c ./gm/outputs --out json)
+  if echo $result | jq -e 'has("controlensemble_config")' >/dev/null; then
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  fi
+}
+
+cmd_eval_k8s () {
+  echo "Running cue eval on Kubernetes configs..."
+  result=$(cue eval -c ./k8s/outputs --out json)
+  if echo $result | jq -e 'has("operator_manifests")' >/dev/null; then
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  fi
+}
+
+cmd_eval_spire () {
+  echo "Running cue eval on greymatter configs with Spire..."
+
+  result=$(cue eval -t spire=true -c ./gm/outputs --out json)
+  cluster=$(echo $result | jq '.controlensemble_config[] | select(.cluster_key=="controlensemble")')
+  secret_validation_name=$(echo $cluster | jq -r '.secret.secret_validation_name')
+  expected_value="spiffe://greymatter.io"
+
+  if [ "$secret_validation_name" = "$expected_value" ]; then
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  else
+    echo -e "\nTest ${FUNCNAME[0]}............FAILED\n"
+    echo "Did not find {secret_validation_name: \"$expected_value\"} in cluster."
+    echo $cluster | jq
+    exit 1
+  fi
+
+  echo "Running cue eval on Kubernetes configs with Spire..."
+
+  result=$(cue eval -t spire=true -c ./k8s/outputs -e operator_manifests --out json)
+  spire_namespace=$(echo $result | jq '.[] | select(.metadata.name=="spire")')
+
+  if [ ! -z "$spire_namespace" ]; then
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  else
+    echo -e "\nTest ${FUNCNAME[0]}............FAILED\n"
+    echo "Failed to find spire namespace."
+    exit 1
+  fi
+}
+
+set +e
+
+# test spire enabled and tls enabled
+# should see spire stuff in k8s and gm 
+# should have tls on edge but not any other sidecar
+cmd_eval_k8s_spire_enabled_and_edge_tls_enabled(){
+  echo "Running cue eval on kubernetes configs with spire and edge tls enabled"
+  cue_eval=$(cue eval -t spire=true -t edge_enable_tls=true -c ./k8s/outputs ./global_intermediates.cue ./secrets.cue ./inputs.cue -e k8s_manifests --out=json)
+
+  ################################
+  # FOR DEPLOY/STS WITH NOT EDGE
+  ################################
+  echo "  > Checking each deploy and sts for correct volumes, volume mounts, and environment variables"
+  deploy_sts_names=$(echo ${cue_eval} | jq -r '.[] |  select((.kind=="StatefulSet") or (.kind=="Deployment")) | .metadata.name')
+  local p=0
+  for n in ${deploy_sts_names}; do
+    ################################
+    # SPECIFIC EDGE CHECKS
+    ################################
+    if [[ ${n} == edge ]]; then
+      # check edge for tls-certs volume
+      _check_volume "is_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for tls-certs sidecar volume mount 
+      _check_volume_mount "is_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket volume
+      _check_volume "is_present" "${cue_eval}" ${n} "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket sidecar volume mount
+      _check_volume_mount "is_present" "${cue_eval}" ${n} "sidecar18" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    else
+      ################################
+      #  Non edge deploy/sts checks
+      ################################
+      # check that there are NO tls volume mounts on it
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there are NO tls volume mount on it
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there is a spire volume mount
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire_path environment variable
+      _check_environment_variable "is_present" "${cue_eval}" ${n} "sidecar18" "SPIRE_PATH"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire volume
+      _check_volume "is_present" "${cue_eval}" "edge" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    fi
+    
+  done
+  if [[ $p -gt 0 ]]; then
+    echo "Theres are ${p} issue(s) above checking all deploy/sts"
+  fi
+
+  if [[ $p -gt 0 ]];then
+    echo -e "\nTest ${FUNCNAME[0]}............FAILED\n"
+    exit 6
+  else
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  fi
+}
+
+# test spire enabled and edge tls disabled
+# should see spire stuff in k8s but no tls stuff 
+cmd_eval_k8s_spire_enabled_and_edge_tls_disabled(){
+  echo "Running cue eval on kubernetes configs with spire enabled and edge tls disabled"
+  cue_eval=$(cue eval -t spire=true -t edge_enable_tls=false -c ./k8s/outputs ./global_intermediates.cue ./secrets.cue ./inputs.cue -e k8s_manifests --out=json)
+
+  ################################
+  # FOR DEPLOY/STS WITH NOT EDGE
+  ################################
+  echo "  > Checking each deploy and sts for correct volumes, volume mounts, and environment variables"
+  deploy_sts_names=$(echo ${cue_eval} | jq -r '.[] |  select((.kind=="StatefulSet") or (.kind=="Deployment")) | .metadata.name')
+  local p=0
+  for n in ${deploy_sts_names}; do
+    ################################
+    # SPECIFIC EDGE CHECKS
+    ################################
+    if [[ ${n} == edge ]]; then
+      # check edge for tls-certs volume
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for tls-certs sidecar volume mount 
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket volume
+      _check_volume "is_present" "${cue_eval}" ${n} "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket sidecar volume mount
+      _check_volume_mount "is_present" "${cue_eval}" ${n} "sidecar18" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    else
+      ################################
+      #  Non edge deploy/sts checks
+      ################################
+      # check that there are NO tls volume mounts on it
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there are NO tls volume mount on it
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there is a spire volume mount
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire_path environment variable
+      _check_environment_variable "is_present" "${cue_eval}" ${n} "sidecar18" "SPIRE_PATH"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire volume
+      _check_volume "is_present" "${cue_eval}" "edge" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    fi
+    
+  done
+  if [[ $p -gt 0 ]]; then
+    echo "Theres are ${p} issue(s) above checking all deploy/sts"
+  fi
+
+  if [[ $p -gt 0 ]];then
+    echo -e "\nTest ${FUNCNAME[0]}............FAILED\n"
+    exit 6
+  else
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  fi
+}
+
+# test spire disabled and edge tls disabled
+# should see spire stuff in k8s but no tls stuff 
+cmd_eval_k8s_spire_disabled_and_edge_tls_disabled(){
+  echo "Running cue eval on kubernetes configs with spire and edge tls disabled"
+  cue_eval=$(cue eval -t spire=false -t edge_enable_tls=false -c ./k8s/outputs ./global_intermediates.cue ./secrets.cue ./inputs.cue -e k8s_manifests --out=json)
+
+  ################################
+  # FOR DEPLOY/STS WITH NOT EDGE
+  ################################
+  echo "  > Checking each deploy and sts for correct volumes, volume mounts, and environment variables"
+  deploy_sts_names=$(echo ${cue_eval} | jq -r '.[] |  select((.kind=="StatefulSet") or (.kind=="Deployment")) | .metadata.name')
+  local p=0
+  for n in ${deploy_sts_names}; do
+    ################################
+    # SPECIFIC EDGE CHECKS
+    ################################
+    if [[ ${n} == edge ]]; then
+      # check edge for tls-certs volume
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for tls-certs sidecar volume mount 
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket volume
+      _check_volume "is_not_present" "${cue_eval}" ${n} "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket sidecar volume mount
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    else
+      ################################
+      #  Non edge deploy/sts checks
+      ################################
+      # check that there are NO tls volume mounts on it
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there are NO tls volume mount on it
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there is a spire volume mount
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire_path environment variable
+      _check_environment_variable "is_not_present" "${cue_eval}" ${n} "sidecar18" "SPIRE_PATH"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire volume
+      _check_volume "is_not_present" "${cue_eval}" "edge" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    fi
+    
+  done
+  if [[ $p -gt 0 ]]; then
+    echo "Theres are ${p} issue(s) above checking all deploy/sts"
+  fi
+
+  if [[ $p -gt 0 ]];then
+    echo -e "\nTest ${FUNCNAME[0]}............FAILED\n"
+    exit 6
+  else
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  fi
+}
+
+# test spire disabled and edge tls enabled
+# should see spire stuff in k8s but no tls stuff 
+cmd_eval_k8s_spire_disabled_and_edge_tls_enabled(){
+  echo "Running cue eval on kubernetes configs with spire and edge tls enabled"
+  cue_eval=$(cue eval -t spire=false -t edge_enable_tls=true -c ./k8s/outputs -e k8s_manifests --out=json)
+
+  ################################
+  # FOR DEPLOY/STS WITH NOT EDGE
+  ################################
+  echo "  > Checking each deploy and sts for correct volumes, volume mounts, and environment variables"
+  deploy_sts_names=$(echo ${cue_eval} | jq -r '.[] |  select((.kind=="StatefulSet") or (.kind=="Deployment")) | .metadata.name')
+  local p=0
+  for n in ${deploy_sts_names}; do
+    ################################
+    # SPECIFIC EDGE CHECKS
+    ################################
+    if [[ ${n} == edge ]]; then
+      # check edge for tls-certs volume
+      _check_volume "is_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for tls-certs sidecar volume mount 
+      _check_volume_mount "is_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket volume
+      _check_volume "is_not_present" "${cue_eval}" ${n} "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check edge for spire-socket sidecar volume mount
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    else
+      ################################
+      #  Non edge deploy/sts checks
+      ################################
+      # check that there are NO tls volume mounts on it
+      _check_volume_mount "is_not_present" "${cue_eval}" ${n} "sidecar18" "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there are NO tls volume mount on it
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check that there is a spire volume mount
+      _check_volume "is_not_present" "${cue_eval}" ${n} "tls-certs"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire_path environment variable
+      _check_environment_variable "is_not_present" "${cue_eval}" ${n} "sidecar18" "SPIRE_PATH"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+      # check there is a spire volume
+      _check_volume "is_not_present" "${cue_eval}" "edge" "spire-socket"
+      if [[ $? -ne 0 ]]; then p=$((p + 1)); fi
+    fi
+    
+  done
+  if [[ $p -gt 0 ]]; then
+    echo "Theres are ${p} issue(s) above checking all deploy/sts"
+  fi
+
+  if [[ $p -gt 0 ]];then
+    echo -e "\nTest ${FUNCNAME[0]}............FAILED\n"
+    exit 6
+  else
+    echo -e "\nTest ${FUNCNAME[0]}............PASSED\n"
+  fi
+}
+
+cmd_eval_gm(){
+  echo "Running cue eval on kubernetes configs with spire and edge tls enabled"
+  pytest scripts/gm_test_functions.py --no-header -v
+}
+
+source scripts/k8s_test_functions.sh
+
+cmd_help () {
+  echo "valid commands: eval help
+  
+eval_all:
+  'cue eval' all configs.
+eval_gm:
+  'cue eval' greymatter mesh configs.
+eval_k8s:
+  'cue eval' Kubernetes manifests.
+eval_spire:
+  'cue eval' greymatter and Kubernetes manifests with Spire.
+help:
+  Print this message and exit."
+}
+
+if [ $# -eq 0 ]; then
+  cmd_help
+else
+  MODE="${1:-}"
+  case "$MODE" in
+    help|eval_all|eval_gm|eval_k8s|eval_spire|eval_k8s_spire_enabled_and_edge_tls_enabled|eval_k8s_spire_enabled_and_edge_tls_disabled|eval_k8s_spire_disabled_and_edge_tls_disabled|eval_k8s_spire_disabled_and_edge_tls_enabled|eval_gm_spire_enabled_and_edge_tls_enabled)
+      shift
+      "cmd_$MODE" "$@"
+      ;;
+    *)
+      cmd_help
+      ;;
+  esac
+fi
