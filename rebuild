@@ -97,5 +97,11 @@ then
         --from-file=known_hosts=known_hosts \
         -n default
 
+  # just reuse the password we already need. any random string will do
+  kubectl delete secret elasticsearch-password -n greymatter
+  kubectl create secret generic elasticsearch-password --from-literal=$GREYMATTER_REGISTRY_PASSWORD -n greymatter
+  kubectl delete pods -l app.kubernetes.io/name=greymatter-audit-agent -n greymatter
+  kubectl delete pods -l greymatter.io/cluster=observables -n greymatter
+
   mustWaitForEdge
 fi
